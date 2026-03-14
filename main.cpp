@@ -5,9 +5,8 @@
 #include <chrono>
 #include <memory>
 
-// ---------------------------------------------
+
 // A simple order
-// ---------------------------------------------
 struct Order {
     using ID = int;
     enum Side { BUY, SELL };
@@ -22,9 +21,6 @@ struct Order {
         : id(id), side(side), price(price), quantity(quantity), timestamp(std::chrono::steady_clock::now()) {}
 };
 
-// ---------------------------------------------
-// A very basic order book
-// ---------------------------------------------
 class OrderBook {
 public:
     using OrderPtr = std::shared_ptr<Order>;
@@ -36,7 +32,7 @@ public:
             asks_[order->price].push_back(order);
     }
 
-    // Cancel an order by ID (simple linear search, not efficient!)
+    // Cancel an order by ID
     bool cancel(int id) {
         for (auto& [_, list] : bids_) {
             for (auto it = list.begin(); it != list.end(); ++it) {
@@ -59,7 +55,7 @@ public:
         return false;
     }
 
-    // Match a marketable order (simplest price-time priority)
+    // Match a marketable order
     // Returns number of shares executed
     int match(Order::Side side, int quantity) {
         int remaining = quantity;
