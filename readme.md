@@ -6,8 +6,8 @@
 Order book with price levels and FIFO queues.
 Basic order generation and matching.
 Simple statistics (orders added, cancelled, matched).
+poisson process done
 - to be done:
-  - Realistic event rates (Poisson processes).
   - Proper cancellation (pick a real order, not random ID).
   - Waiting‑time distributions and fill probabilities.
   - Performance optimisations for large‑scale simulation.
