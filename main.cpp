@@ -1,3 +1,9 @@
+
+//Poisson Arrival Process
+// changed: Replaced flat random event selection with proper Poisson processes for arrivals, cancellations, and executions.
+// Each event type now has a rate (lambda) and inter-arrival times are exponentially distributed — standard in market microstructure.
+
+
 #include <iostream>
 #include <map>
 #include <list>
@@ -5,8 +11,6 @@
 #include <chrono>
 #include <memory>
 
-
-// A simple order
 struct Order {
     using ID = int;
     enum Side { BUY, SELL };
@@ -15,10 +19,10 @@ struct Order {
     Side side;
     double price;
     int quantity;
-    std::chrono::steady_clock::time_point timestamp;
+    double sim_time; // simulation time (seconds) instead of wall clock
 
-    Order(ID id, Side side, double price, int quantity)
-        : id(id), side(side), price(price), quantity(quantity), timestamp(std::chrono::steady_clock::now()) {}
+    Order(ID id, Side side, double price, int quantity, double t)
+        : id(id), side(side), price(price), quantity(quantity), sim_time(t) {}
 };
 
 class OrderBook {
@@ -30,144 +34,156 @@ public:
             bids_[order->price].push_back(order);
         else
             asks_[order->price].push_back(order);
+        all_orders_[order->id] = order;
     }
 
-    // Cancel an order by ID
     bool cancel(int id) {
-        for (auto& [_, list] : bids_) {
-            for (auto it = list.begin(); it != list.end(); ++it) {
-                if ((*it)->id == id) {
-                    list.erase(it);
-                    if (list.empty()) bids_.erase(_);
-                    return true;
-                }
-            }
+        auto it = all_orders_.find(id);
+        if (it == all_orders_.end()) return false;
+        auto& order = it->second;
+
+        auto& book_side = (order->side == Order::BUY) ? bids_ : asks_;
+        auto level_it = book_side.find(order->price);
+        if (level_it != book_side.end()) {
+            auto& lst = level_it->second;
+            lst.remove_if([id](const OrderPtr& o) { return o->id == id; });
+            if (lst.empty()) book_side.erase(level_it);
         }
-        for (auto& [_, list] : asks_) {
-            for (auto it = list.begin(); it != list.end(); ++it) {
-                if ((*it)->id == id) {
-                    list.erase(it);
-                    if (list.empty()) asks_.erase(_);
-                    return true;
-                }
-            }
-        }
-        return false;
+        all_orders_.erase(it);
+        return true;
     }
 
-    // Match a marketable order
-    // Returns number of shares executed
+    // Returns a random live order ID (for realistic cancellation)
+    int randomLiveOrderId(std::mt19937& gen) {
+        if (all_orders_.empty()) return -1;
+        int idx = std::uniform_int_distribution<>(0, (int)all_orders_.size()-1)(gen);
+        auto it = all_orders_.begin();
+        std::advance(it, idx);
+        return it->first;
+    }
+
     int match(Order::Side side, int quantity) {
         int remaining = quantity;
         if (side == Order::BUY) {
-            // match against asks (lowest price first)
             while (remaining > 0 && !asks_.empty()) {
                 auto best = asks_.begin();
                 auto& level = best->second;
                 while (remaining > 0 && !level.empty()) {
-                    auto& order = level.front();
-                    int trade = std::min(remaining, order->quantity);
-                    order->quantity -= trade;
+                    auto& o = level.front();
+                    int trade = std::min(remaining, o->quantity);
+                    o->quantity -= trade;
                     remaining -= trade;
-                    if (order->quantity == 0)
-                        level.pop_front();
+                    if (o->quantity == 0) { all_orders_.erase(o->id); level.pop_front(); }
                 }
-                if (level.empty())
-                    asks_.erase(best);
+                if (level.empty()) asks_.erase(best);
             }
         } else {
-            // match against bids (highest price first)
             while (remaining > 0 && !bids_.empty()) {
-                auto best = std::prev(bids_.end());  // highest price
+                auto best = std::prev(bids_.end());
                 auto& level = best->second;
                 while (remaining > 0 && !level.empty()) {
-                    auto& order = level.front();
-                    int trade = std::min(remaining, order->quantity);
-                    order->quantity -= trade;
+                    auto& o = level.front();
+                    int trade = std::min(remaining, o->quantity);
+                    o->quantity -= trade;
                     remaining -= trade;
-                    if (order->quantity == 0)
-                        level.pop_front();
+                    if (o->quantity == 0) { all_orders_.erase(o->id); level.pop_front(); }
                 }
-                if (level.empty())
-                    bids_.erase(best);
+                if (level.empty()) bids_.erase(best);
             }
         }
-        return quantity - remaining;  // executed shares
+        return quantity - remaining;
     }
 
-    void print() {
-        std::cout << "\n--- Order Book ---\n";
-        std::cout << "Bids (price : quantity)\n";
-        for (auto it = bids_.rbegin(); it != bids_.rend(); ++it) {
-            int total = 0;
-            for (auto& o : it->second) total += o->quantity;
-            std::cout << it->first << " : " << total << "\n";
+    void print() const {
+        std::cout << "\n--- Order Book (top 5 levels) ---\n";
+        std::cout << "Asks:\n";
+        int cnt = 0;
+        for (auto& [price, lst] : asks_) {
+            if (cnt++ >= 5) break;
+            int total = 0; for (auto& o : lst) total += o->quantity;
+            std::cout << "  " << price << " : " << total << "\n";
         }
-        std::cout << "Asks (price : quantity)\n";
-        for (auto& [price, list] : asks_) {
-            int total = 0;
-            for (auto& o : list) total += o->quantity;
-            std::cout << price << " : " << total << "\n";
+        std::cout << "Bids:\n";
+        cnt = 0;
+        for (auto it = bids_.rbegin(); it != bids_.rend(); ++it) {
+            if (cnt++ >= 5) break;
+            int total = 0; for (auto& o : it->second) total += o->quantity;
+            std::cout << "  " << it->first << " : " << total << "\n";
         }
     }
+
+    size_t liveOrderCount() const { return all_orders_.size(); }
 
 private:
-    std::map<double, std::list<OrderPtr>> bids_;  // price -> orders (ascending)
-    std::map<double, std::list<OrderPtr>> asks_;  // price -> orders (ascending)
+    std::map<double, std::list<OrderPtr>> bids_;
+    std::map<double, std::list<OrderPtr>> asks_;
+    std::map<int, OrderPtr> all_orders_; // fast lookup for cancellation
 };
 
-// ---------------------------------------------
-// Main simulation loop (very basic)
-// ---------------------------------------------
+// Poisson process: next event time = current + Exp(1/lambda)
+double nextArrival(double lambda, std::mt19937& gen) {
+    std::exponential_distribution<> exp_dist(lambda);
+    return exp_dist(gen);
+}
+
 int main() {
-    std::cout << "=== Limit Order Book Simulation (Ongoing) ===\n";
+    std::cout << "=== LOB Simulation — Commit 1: Poisson Arrivals ===\n\n";
 
     OrderBook book;
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_real_distribution<> priceDist(100.0, 200.0);
-    std::uniform_int_distribution<> qtyDist(1, 100);
-    std::uniform_int_distribution<> sideDist(0, 1);
-    std::uniform_real_distribution<> eventDist(0.0, 1.0);
+    std::mt19937 gen(42);
+
+    std::uniform_real_distribution<> priceDist(99.0, 101.0); // near mid-price
+    std::uniform_int_distribution<>  qtyDist(1, 50);
+    std::uniform_int_distribution<>  sideDist(0, 1);
+
+    // Rates (events per second) — typical for a liquid stock
+    const double lambda_arrival     = 10.0;  // limit orders arrive at 10/sec
+    const double lambda_cancel      = 5.0;   // cancellations at 5/sec
+    const double lambda_market      = 2.0;   // market orders at 2/sec
+
+    const double SIM_DURATION = 60.0; // 60 seconds of simulated time
+
+    double t_arrival = nextArrival(lambda_arrival, gen);
+    double t_cancel  = nextArrival(lambda_cancel, gen);
+    double t_market  = nextArrival(lambda_market, gen);
 
     int nextId = 1;
-    int numEvents = 1000;
-    int arrivals = 0, cancellations = 0, matches = 0;
+    int arrivals = 0, cancellations = 0, market_orders = 0;
 
-    for (int i = 0; i < numEvents; ++i) {
-        double r = eventDist(gen);
+    // Event-driven loop: always process the earliest event
+    while (true) {
+        double t_next = std::min({t_arrival, t_cancel, t_market});
+        if (t_next > SIM_DURATION) break;
 
-        // Simple event selection (not based on real rates)
-        if (r < 0.6) {  // 60% new order
-            auto side = sideDist(gen) == 0 ? Order::BUY : Order::SELL;
+        if (t_next == t_arrival) {
+            auto side  = sideDist(gen) == 0 ? Order::BUY : Order::SELL;
             double price = priceDist(gen);
             int qty = qtyDist(gen);
-            auto order = std::make_shared<Order>(nextId++, side, price, qty);
-            book.add(order);
+            book.add(std::make_shared<Order>(nextId++, side, price, qty, t_next));
             arrivals++;
-        }
-        else if (r < 0.8) {  // 20% cancellation
-            // pick a random ID to cancel (simplistic)
-            if (nextId > 1) {
-                int id = std::uniform_int_distribution<>(1, nextId-1)(gen);
-                if (book.cancel(id))
-                    cancellations++;
-            }
-        }
-        else {  // 20% market order
+            t_arrival += nextArrival(lambda_arrival, gen);
+
+        } else if (t_next == t_cancel) {
+            int id = book.randomLiveOrderId(gen);
+            if (id != -1 && book.cancel(id)) cancellations++;
+            t_cancel += nextArrival(lambda_cancel, gen);
+
+        } else {
             auto side = sideDist(gen) == 0 ? Order::BUY : Order::SELL;
             int qty = qtyDist(gen);
-            int executed = book.match(side, qty);
-            if (executed > 0) matches++;
+            int exec = book.match(side, qty);
+            if (exec > 0) market_orders++;
+            t_market += nextArrival(lambda_market, gen);
         }
     }
 
-    std::cout << "\n--- Simulation Results ---\n";
-    std::cout << "Events processed: " << numEvents << "\n";
-    std::cout << "New orders: " << arrivals << "\n";
-    std::cout << "Cancellations: " << cancellations << "\n";
-    std::cout << "Market order matches: " << matches << "\n";
+    std::cout << "Simulation time: " << SIM_DURATION << "s\n";
+    std::cout << "Limit order arrivals:  " << arrivals << "\n";
+    std::cout << "Cancellations:         " << cancellations << "\n";
+    std::cout << "Market order fills:    " << market_orders << "\n";
+    std::cout << "Live orders remaining: " << book.liveOrderCount() << "\n";
     book.print();
 
     return 0;
 }
+
